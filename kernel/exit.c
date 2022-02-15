@@ -69,6 +69,12 @@
 #include <asm/unistd.h>
 #include <asm/mmu_context.h>
 
+#define SWAP_DEFAULT 60
+
+extern int isProcessRegisteredForBallooning;
+extern struct task_struct *processRegisteredForBallooning;
+extern int vm_swappiness;
+
 static void __unhash_process(struct task_struct *p, bool group_dead)
 {
 	nr_threads--;
@@ -728,6 +734,19 @@ void __noreturn do_exit(long code)
 {
 	struct task_struct *tsk = current;
 	int group_dead;
+
+	/*
+	 * If registered process is exiting, remove it from ballooning subsystem
+	 */
+	
+	if (isProcessRegisteredForBallooning &&
+			processRegisteredForBallooning != NULL &&
+			processRegisteredForBallooning->pid == tsk->pid) {
+		printk("Process (pid: %d) is exiting. Time for cleanup\n", processRegisteredForBallooning->pid);
+		isProcessRegisteredForBallooning = 0;
+		processRegisteredForBallooning = NULL;
+		vm_swappiness = SWAP_DEFAULT;
+	}
 
 	/*
 	 * We can get here from a kernel oops, sometimes with preemption off.

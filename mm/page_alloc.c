@@ -80,6 +80,12 @@
 #include "shuffle.h"
 #include "page_reporting.h"
 
+#define SIGBALLOON 42
+#define FREE_MEMORY_LIMIT (1 * 1024 * 1024)
+
+extern int isProcessRegisteredForBallooning;
+extern struct task_struct *processRegisteredForBallooning;
+
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
 typedef int __bitwise fpi_t;
 
@@ -5021,6 +5027,46 @@ out:
 	}
 
 	trace_mm_page_alloc(page, order, alloc_mask, ac.migratetype);
+
+	/*
+	 * BALLOONING
+	 * Check if enough free memory is available.
+	 * If not, send ballooning signal to registered process
+	 */
+	if (isProcessRegisteredForBallooning) {
+		// Someone is registerd for ballooning
+		struct kernel_siginfo balloon_siginfo;
+			// Reference:
+			// https://docs.oracle.com/cd/E36784_01/html/E36873/siginfo-3head.html
+			memset(&balloon_siginfo, 0, sizeof(struct kernel_siginfo));
+			balloon_siginfo.si_signo = SIGBALLOON; // Signal number
+			balloon_siginfo.si_code = SI_QUEUE; // The signal was sent by sigqueue()
+
+			if (send_sig_info(SIGBALLOON, &balloon_siginfo, processRegisteredForBallooning) >= 0) {
+				printk("SIGBALLOON sent to process (pid: %d)\n", processRegisteredForBallooning->pid);
+			} else {
+				printk("Error: SIGBALLOON not sent, negative return value\n");
+			}
+		/*
+		 * Check this for PAGE_SHIFT:
+		 * https://kernelnewbies.org/MemoryIssues#:~:text=PAGE_SHIFT%20is%20the%20number%20of,define%20this%20to%20different%20values.&text=Even%20on%20the%20same%20base,can%20have%20different%20page%20sizes.
+		 */
+		unsigned long freeMemoryKB = nr_free_pages() << (PAGE_SHIFT - 10); // - 10 to convert to KB
+		if (freeMemoryKB <= FREE_MEMORY_LIMIT) {
+			struct kernel_siginfo balloon_siginfo;
+			// Reference:
+			// https://docs.oracle.com/cd/E36784_01/html/E36873/siginfo-3head.html
+			memset(&balloon_siginfo, 0, sizeof(struct kernel_siginfo));
+			balloon_siginfo.si_signo = SIGBALLOON; // Signal number
+			balloon_siginfo.si_code = SI_QUEUE; // The signal was sent by sigqueue()
+
+			if (send_sig_info(SIGBALLOON, &balloon_siginfo, processRegisteredForBallooning) >= 0) {
+				printk("SIGBALLOON sent to process (pid: %d)\n", processRegisteredForBallooning->pid);
+			} else {
+				printk("Error: SIGBALLOON not sent, negative return value\n");
+			}
+		}
+	}
 
 	return page;
 }
