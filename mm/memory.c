@@ -1203,6 +1203,8 @@ copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma)
 	return ret;
 }
 
+#define SWAP_PAGES_COUNT 2
+extern pte_t *swappedOutPtes[];
 static unsigned long zap_pte_range(struct mmu_gather *tlb,
 				struct vm_area_struct *vma, pmd_t *pmd,
 				unsigned long addr, unsigned long end,
@@ -1225,6 +1227,7 @@ again:
 	arch_enter_lazy_mmu_mode();
 	do {
 		pte_t ptent = *pte;
+
 		if (pte_none(ptent))
 			continue;
 
@@ -1262,6 +1265,7 @@ again:
 			}
 			rss[mm_counter(page)]--;
 			page_remove_rmap(page, false);
+
 			if (unlikely(page_mapcount(page) < 0))
 				print_bad_pte(vma, addr, ptent, page);
 			if (unlikely(__tlb_remove_page(tlb, page))) {

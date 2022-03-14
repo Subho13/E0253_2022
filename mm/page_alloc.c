@@ -85,6 +85,7 @@
 
 extern int isProcessRegisteredForBallooning;
 extern struct task_struct *processRegisteredForBallooning;
+int sigBalloonSent = 0;
 
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
 typedef int __bitwise fpi_t;
@@ -5034,37 +5035,32 @@ out:
 	 * If not, send ballooning signal to registered process
 	 */
 	if (isProcessRegisteredForBallooning) {
+		unsigned long freeMemoryKB;
 		// Someone is registerd for ballooning
-		struct kernel_siginfo balloon_siginfo;
-			// Reference:
-			// https://docs.oracle.com/cd/E36784_01/html/E36873/siginfo-3head.html
-			memset(&balloon_siginfo, 0, sizeof(struct kernel_siginfo));
-			balloon_siginfo.si_signo = SIGBALLOON; // Signal number
-			balloon_siginfo.si_code = SI_QUEUE; // The signal was sent by sigqueue()
-
-			if (send_sig_info(SIGBALLOON, &balloon_siginfo, processRegisteredForBallooning) >= 0) {
-				printk("SIGBALLOON sent to process (pid: %d)\n", processRegisteredForBallooning->pid);
-			} else {
-				printk("Error: SIGBALLOON not sent, negative return value\n");
-			}
 		/*
 		 * Check this for PAGE_SHIFT:
 		 * https://kernelnewbies.org/MemoryIssues#:~:text=PAGE_SHIFT%20is%20the%20number%20of,define%20this%20to%20different%20values.&text=Even%20on%20the%20same%20base,can%20have%20different%20page%20sizes.
 		 */
-		unsigned long freeMemoryKB = nr_free_pages() << (PAGE_SHIFT - 10); // - 10 to convert to KB
+		freeMemoryKB = nr_free_pages() << (PAGE_SHIFT - 10); // - 10 to convert to KB
 		if (freeMemoryKB <= FREE_MEMORY_LIMIT) {
-			struct kernel_siginfo balloon_siginfo;
-			// Reference:
-			// https://docs.oracle.com/cd/E36784_01/html/E36873/siginfo-3head.html
-			memset(&balloon_siginfo, 0, sizeof(struct kernel_siginfo));
-			balloon_siginfo.si_signo = SIGBALLOON; // Signal number
-			balloon_siginfo.si_code = SI_QUEUE; // The signal was sent by sigqueue()
+			if (sigBalloonSent == 0) {
+				struct kernel_siginfo balloon_siginfo;
+				// Reference:
+				// https://docs.oracle.com/cd/E36784_01/html/E36873/siginfo-3head.html
+				memset(&balloon_siginfo, 0, sizeof(struct kernel_siginfo));
+				balloon_siginfo.si_signo = SIGBALLOON; // Signal number
+				balloon_siginfo.si_code = SI_QUEUE; // The signal was sent by sigqueue()
 
-			if (send_sig_info(SIGBALLOON, &balloon_siginfo, processRegisteredForBallooning) >= 0) {
-				printk("SIGBALLOON sent to process (pid: %d)\n", processRegisteredForBallooning->pid);
-			} else {
-				printk("Error: SIGBALLOON not sent, negative return value\n");
+				if (send_sig_info(SIGBALLOON, &balloon_siginfo, processRegisteredForBallooning) >= 0) {
+					printk("SIGBALLOON sent to process (pid: %d)\n", processRegisteredForBallooning->pid);
+				} else {
+					printk("Error: SIGBALLOON not sent, negative return value\n");
+				}
+
+				sigBalloonSent = 1;
 			}
+		} else if (sigBalloonSent == 1) {
+			sigBalloonSent = 0;
 		}
 	}
 

@@ -61,6 +61,8 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
 
+extern int isProcessRegisteredForBallooning;
+
 struct scan_control {
 	/* How many pages shrink_list() should reclaim */
 	unsigned long nr_to_reclaim;
@@ -1097,6 +1099,14 @@ static unsigned int shrink_page_list(struct list_head *page_list,
 			goto keep;
 
 		VM_BUG_ON_PAGE(PageActive(page), page);
+
+		// Disable swapping for ballooning
+		if (isProcessRegisteredForBallooning) {
+			if (PageAnon(page)) {
+				printk("Spikking paging");
+				continue;
+			}
+		}
 
 		nr_pages = compound_nr(page);
 

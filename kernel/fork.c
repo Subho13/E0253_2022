@@ -683,6 +683,7 @@ void __mmdrop(struct mm_struct *mm)
 	mm_free_pgd(mm);
 	destroy_context(mm);
 	mmu_notifier_subscriptions_destroy(mm);
+	
 	check_mm(mm);
 	put_user_ns(mm->user_ns);
 	free_mm(mm);

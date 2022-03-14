@@ -79,6 +79,9 @@
 
 #include "internal.h"
 
+extern int isProcessRegisteredForBallooning;
+extern struct task_struct* processRegisteredForBallooning;
+
 static struct kmem_cache *anon_vma_cachep;
 static struct kmem_cache *anon_vma_chain_cachep;
 
@@ -1627,6 +1630,7 @@ static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 			 * Store the swap location in the pte.
 			 * See handle_pte_fault() ...
 			 */
+
 			if (unlikely(PageSwapBacked(page) != PageSwapCache(page))) {
 				WARN_ON_ONCE(1);
 				ret = false;

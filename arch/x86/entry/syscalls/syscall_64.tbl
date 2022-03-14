@@ -410,3 +410,4 @@
 # not special and are not to be used for x32-specific syscalls.
 
 548	64	balloon	sys_balloon
+549 64  swap_pages  sys_swap_pages

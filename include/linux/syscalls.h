@@ -1367,3 +1367,6 @@ int __sys_setsockopt(int fd, int level, int optname, char __user *optval,
 #endif
 
 asmlinkage long sys_balloon(void);
+// asmlinkage long sys_swap_pages(void);
+
+asmlinkage int swap_pages(void);
