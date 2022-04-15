@@ -3158,6 +3158,271 @@ static bool swap_discardable(struct swap_info_struct *si)
 	return true;
 }
 
+/*
+ Same as swapon system call
+ but for kernel side filename
+*/
+int swapon_kernel(const char *specialfile, int swap_flags) {
+	struct swap_info_struct *p;
+	struct filename *name;
+	struct file *swap_file = NULL;
+	struct address_space *mapping;
+	int prio;
+	int error;
+	union swap_header *swap_header;
+	int nr_extents;
+	sector_t span;
+	unsigned long maxpages;
+	unsigned char *swap_map = NULL;
+	struct swap_cluster_info *cluster_info = NULL;
+	unsigned long *frontswap_map = NULL;
+	struct page *page = NULL;
+	struct inode *inode = NULL;
+	bool inced_nr_rotate_swap = false;
+
+	if (swap_flags & ~SWAP_FLAGS_VALID)
+		return -EINVAL;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	if (!swap_avail_heads)
+		return -ENOMEM;
+
+	p = alloc_swap_info();
+	if (IS_ERR(p))
+		return PTR_ERR(p);
+
+	INIT_WORK(&p->discard_work, swap_discard_work);
+
+	name = getname_kernel(specialfile);
+	if (IS_ERR(name)) {
+		error = PTR_ERR(name);
+		name = NULL;
+		goto bad_swap;
+	}
+	swap_file = file_open_name(name, O_RDWR|O_LARGEFILE, 0);
+	if (IS_ERR(swap_file)) {
+		error = PTR_ERR(swap_file);
+		swap_file = NULL;
+		goto bad_swap;
+	}
+
+	p->swap_file = swap_file;
+	mapping = swap_file->f_mapping;
+	inode = mapping->host;
+
+	error = claim_swapfile(p, inode);
+	if (unlikely(error))
+		goto bad_swap;
+
+	inode_lock(inode);
+	if (IS_SWAPFILE(inode)) {
+		error = -EBUSY;
+		goto bad_swap_unlock_inode;
+	}
+
+	/*
+	 * Read the swap header.
+	 */
+	if (!mapping->a_ops->readpage) {
+		error = -EINVAL;
+		goto bad_swap_unlock_inode;
+	}
+	page = read_mapping_page(mapping, 0, swap_file);
+	if (IS_ERR(page)) {
+		error = PTR_ERR(page);
+		goto bad_swap_unlock_inode;
+	}
+	swap_header = kmap(page);
+
+	maxpages = read_swap_header(p, swap_header, inode);
+	if (unlikely(!maxpages)) {
+		error = -EINVAL;
+		goto bad_swap_unlock_inode;
+	}
+
+	/* OK, set up the swap map and apply the bad block list */
+	swap_map = vzalloc(maxpages);
+	if (!swap_map) {
+		error = -ENOMEM;
+		goto bad_swap_unlock_inode;
+	}
+
+	if (p->bdev && blk_queue_stable_writes(p->bdev->bd_disk->queue))
+		p->flags |= SWP_STABLE_WRITES;
+
+	if (p->bdev && p->bdev->bd_disk->fops->rw_page)
+		p->flags |= SWP_SYNCHRONOUS_IO;
+
+	if (p->bdev && blk_queue_nonrot(bdev_get_queue(p->bdev))) {
+		int cpu;
+		unsigned long ci, nr_cluster;
+
+		p->flags |= SWP_SOLIDSTATE;
+		p->cluster_next_cpu = alloc_percpu(unsigned int);
+		if (!p->cluster_next_cpu) {
+			error = -ENOMEM;
+			goto bad_swap_unlock_inode;
+		}
+		/*
+		 * select a random position to start with to help wear leveling
+		 * SSD
+		 */
+		for_each_possible_cpu(cpu) {
+			per_cpu(*p->cluster_next_cpu, cpu) =
+				1 + prandom_u32_max(p->highest_bit);
+		}
+		nr_cluster = DIV_ROUND_UP(maxpages, SWAPFILE_CLUSTER);
+
+		cluster_info = kvcalloc(nr_cluster, sizeof(*cluster_info),
+					GFP_KERNEL);
+		if (!cluster_info) {
+			error = -ENOMEM;
+			goto bad_swap_unlock_inode;
+		}
+
+		for (ci = 0; ci < nr_cluster; ci++)
+			spin_lock_init(&((cluster_info + ci)->lock));
+
+		p->percpu_cluster = alloc_percpu(struct percpu_cluster);
+		if (!p->percpu_cluster) {
+			error = -ENOMEM;
+			goto bad_swap_unlock_inode;
+		}
+		for_each_possible_cpu(cpu) {
+			struct percpu_cluster *cluster;
+			cluster = per_cpu_ptr(p->percpu_cluster, cpu);
+			cluster_set_null(&cluster->index);
+		}
+	} else {
+		atomic_inc(&nr_rotate_swap);
+		inced_nr_rotate_swap = true;
+	}
+
+	error = swap_cgroup_swapon(p->type, maxpages);
+	if (error)
+		goto bad_swap_unlock_inode;
+
+	nr_extents = setup_swap_map_and_extents(p, swap_header, swap_map,
+		cluster_info, maxpages, &span);
+	if (unlikely(nr_extents < 0)) {
+		error = nr_extents;
+		goto bad_swap_unlock_inode;
+	}
+	/* frontswap enabled? set up bit-per-page map for frontswap */
+	if (IS_ENABLED(CONFIG_FRONTSWAP))
+		frontswap_map = kvcalloc(BITS_TO_LONGS(maxpages),
+					 sizeof(long),
+					 GFP_KERNEL);
+
+	if (p->bdev &&(swap_flags & SWAP_FLAG_DISCARD) && swap_discardable(p)) {
+		/*
+		 * When discard is enabled for swap with no particular
+		 * policy flagged, we set all swap discard flags here in
+		 * order to sustain backward compatibility with older
+		 * swapon(8) releases.
+		 */
+		p->flags |= (SWP_DISCARDABLE | SWP_AREA_DISCARD |
+			     SWP_PAGE_DISCARD);
+
+		/*
+		 * By flagging sys_swapon, a sysadmin can tell us to
+		 * either do single-time area discards only, or to just
+		 * perform discards for released swap page-clusters.
+		 * Now it's time to adjust the p->flags accordingly.
+		 */
+		if (swap_flags & SWAP_FLAG_DISCARD_ONCE)
+			p->flags &= ~SWP_PAGE_DISCARD;
+		else if (swap_flags & SWAP_FLAG_DISCARD_PAGES)
+			p->flags &= ~SWP_AREA_DISCARD;
+
+		/* issue a swapon-time discard if it's still required */
+		if (p->flags & SWP_AREA_DISCARD) {
+			int err = discard_swap(p);
+			if (unlikely(err))
+				pr_err("swapon: discard_swap(%p): %d\n",
+					p, err);
+		}
+	}
+
+	error = init_swap_address_space(p->type, maxpages);
+	if (error)
+		goto bad_swap_unlock_inode;
+
+	/*
+	 * Flush any pending IO and dirty mappings before we start using this
+	 * swap device.
+	 */
+	inode->i_flags |= S_SWAPFILE;
+	error = inode_drain_writes(inode);
+	if (error) {
+		inode->i_flags &= ~S_SWAPFILE;
+		goto free_swap_address_space;
+	}
+
+	mutex_lock(&swapon_mutex);
+	prio = -1;
+	if (swap_flags & SWAP_FLAG_PREFER)
+		prio =
+		  (swap_flags & SWAP_FLAG_PRIO_MASK) >> SWAP_FLAG_PRIO_SHIFT;
+	enable_swap_info(p, prio, swap_map, cluster_info, frontswap_map);
+
+	pr_info("Adding %uk swap on %s.  Priority:%d extents:%d across:%lluk %s%s%s%s%s\n",
+		p->pages<<(PAGE_SHIFT-10), name->name, p->prio,
+		nr_extents, (unsigned long long)span<<(PAGE_SHIFT-10),
+		(p->flags & SWP_SOLIDSTATE) ? "SS" : "",
+		(p->flags & SWP_DISCARDABLE) ? "D" : "",
+		(p->flags & SWP_AREA_DISCARD) ? "s" : "",
+		(p->flags & SWP_PAGE_DISCARD) ? "c" : "",
+		(frontswap_map) ? "FS" : "");
+
+	mutex_unlock(&swapon_mutex);
+	atomic_inc(&proc_poll_event);
+	wake_up_interruptible(&proc_poll_wait);
+
+	error = 0;
+	goto out;
+free_swap_address_space:
+	exit_swap_address_space(p->type);
+bad_swap_unlock_inode:
+	inode_unlock(inode);
+bad_swap:
+	free_percpu(p->percpu_cluster);
+	p->percpu_cluster = NULL;
+	free_percpu(p->cluster_next_cpu);
+	p->cluster_next_cpu = NULL;
+	if (inode && S_ISBLK(inode->i_mode) && p->bdev) {
+		set_blocksize(p->bdev, p->old_block_size);
+		blkdev_put(p->bdev, FMODE_READ | FMODE_WRITE | FMODE_EXCL);
+	}
+	inode = NULL;
+	destroy_swap_extents(p);
+	swap_cgroup_swapoff(p->type);
+	spin_lock(&swap_lock);
+	p->swap_file = NULL;
+	p->flags = 0;
+	spin_unlock(&swap_lock);
+	vfree(swap_map);
+	kvfree(cluster_info);
+	kvfree(frontswap_map);
+	if (inced_nr_rotate_swap)
+		atomic_dec(&nr_rotate_swap);
+	if (swap_file)
+		filp_close(swap_file, NULL);
+out:
+	if (page && !IS_ERR(page)) {
+		kunmap(page);
+		put_page(page);
+	}
+	if (name)
+		putname(name);
+	if (inode)
+		inode_unlock(inode);
+	if (!error)
+		enable_swap_slots_cache();
+	return error;
+}
 SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 {
 	struct swap_info_struct *p;

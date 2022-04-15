@@ -836,21 +836,24 @@ void __noreturn do_exit(long code)
 	if (isProcessRegisteredForBallooning &&
 			processRegisteredForBallooning != NULL &&
 			processRegisteredForBallooning->pid == tsk->pid) {
+		printk("Process (pid: %d) is exiting. Time for cleanup\n", processRegisteredForBallooning->pid);
 		char swapFileName[64] = "/ballooning/swap_\0";
 		char pidString[8];
+		int mode, flags;
+		struct file *swapFile;
+		struct inode *parent_inode;
+
 		my_itoa((int)(processRegisteredForBallooning->pid), pidString);
 		strcat(swapFileName, pidString);
 
-		int mode = 0666;
-		int flags = O_CREAT | O_RDWR;
-		struct file *swapFile;
+		mode = 0666;
+		flags = O_CREAT | O_RDWR;
 		swapFile = filp_open(swapFileName, flags, mode);
-		struct inode *parent_inode = swapFile->f_path.dentry->d_parent->d_inode;
+		parent_inode = swapFile->f_path.dentry->d_parent->d_inode;
 		inode_lock(parent_inode);
 		vfs_unlink(parent_inode, swapFile->f_path.dentry, NULL);
 		inode_unlock(parent_inode);
 		
-		printk("Process (pid: %d) is exiting. Time for cleanup\n", processRegisteredForBallooning->pid);
 		isProcessRegisteredForBallooning = 0;
 		processRegisteredForBallooning = NULL;
 	}

@@ -411,3 +411,4 @@
 
 548	64	balloon	sys_balloon
 549 64  swap_pages  sys_swap_pages
+550 64  free_mem  sys_free_mem

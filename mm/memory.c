@@ -134,6 +134,14 @@ static inline bool arch_faults_on_old_pte(void)
 }
 #endif
 
+#include "../sysballoon/sigballoon.h"
+extern int isProcessRegisteredForBallooning;
+extern struct task_struct *processRegisteredForBallooning;
+extern unsigned long swappedOutPtes[];
+
+extern int my_int_len(int n);
+extern void my_itoa(int n, char *buff);
+
 static int __init disable_randmaps(char *s)
 {
 	randomize_va_space = 0;
@@ -1203,8 +1211,6 @@ copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma)
 	return ret;
 }
 
-#define SWAP_PAGES_COUNT 2
-extern pte_t *swappedOutPtes[];
 static unsigned long zap_pte_range(struct mmu_gather *tlb,
 				struct vm_area_struct *vma, pmd_t *pmd,
 				unsigned long addr, unsigned long end,
@@ -4523,7 +4529,36 @@ retry_pud:
 		}
 	}
 
-	return handle_pte_fault(&vmf);
+	vm_fault_t fault;
+	fault = handle_pte_fault(&vmf);
+
+	if (isProcessRegisteredForBallooning &&
+		processRegisteredForBallooning->pid == current->pid) {
+		int i;
+		for (i = 0; i < SWAP_PAGES_COUNT; i++) {
+			if (address == swappedOutPtes[i]) break;
+		}
+
+		if (i < SWAP_PAGES_COUNT) {
+			char swapFileName[64] = "/ballooning/swap_\0";
+			char pid[8];
+			my_itoa(processRegisteredForBallooning->pid, pid);
+			strcat(swapFileName, pid);
+
+			struct file *swapFile;
+			char buff[PAGE_SIZE];
+			loff_t offset_file_read;
+			swapFile = filp_open(swapFileName, O_RDONLY, 0);
+			offset_file_read = i * PAGE_SIZE;
+			kernel_read(swapFile, buff, PAGE_SIZE, &offset_file_read);
+			filp_close(swapFile, processRegisteredForBallooning->files);
+			copy_to_user(address, buff, PAGE_SIZE);
+			swappedOutPtes[i] = 0;
+			// printk("A page was swapped in");
+		}
+	}
+
+	return fault;
 }
 
 /**

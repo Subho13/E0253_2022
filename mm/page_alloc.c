@@ -85,7 +85,7 @@
 
 extern int isProcessRegisteredForBallooning;
 extern struct task_struct *processRegisteredForBallooning;
-int sigBalloonSent = 0;
+extern int sigBalloonSent;
 
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
 typedef int __bitwise fpi_t;

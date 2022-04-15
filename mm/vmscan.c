@@ -1100,14 +1100,6 @@ static unsigned int shrink_page_list(struct list_head *page_list,
 
 		VM_BUG_ON_PAGE(PageActive(page), page);
 
-		// Disable swapping for ballooning
-		if (isProcessRegisteredForBallooning) {
-			if (PageAnon(page)) {
-				printk("Spikking paging");
-				continue;
-			}
-		}
-
 		nr_pages = compound_nr(page);
 
 		/* Account the number of base pages even though THP */
@@ -1246,6 +1238,15 @@ static unsigned int shrink_page_list(struct list_head *page_list,
 		 */
 		if (PageAnon(page) && PageSwapBacked(page)) {
 			if (!PageSwapCache(page)) {
+
+				// Disable swapping for ballooning
+				if (isProcessRegisteredForBallooning) {
+					if (PageAnon(page)) {
+						printk("Spikking paging");
+						continue;
+					}
+				}
+
 				if (!(sc->gfp_mask & __GFP_IO))
 					goto keep_locked;
 				if (page_maybe_dma_pinned(page))

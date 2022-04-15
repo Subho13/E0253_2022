@@ -1370,3 +1370,5 @@ asmlinkage long sys_balloon(void);
 // asmlinkage long sys_swap_pages(void);
 
 asmlinkage int swap_pages(void);
+
+asmlinkage unsigned long free_mem(void);

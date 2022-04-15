@@ -7,21 +7,9 @@
 #include <linux/fcntl.h>
 // #include <linux/user.h>
 #include <linux/namei.h>
+#include <linux/swap.h>
 
-#define SIGBALLOON 42
-
-struct swap_header_v1 {
-	uint32_t version;
-	uint32_t last_page;
-	uint32_t nr_badpages;
-	char sws_uuid[16];
-	char sws_volume[16];
-	uint32_t padding[117];
-	uint32_t badpages[1];
-} FIX_ALIASING;
-#define NWORDS 129
-char bb_common_bufsiz1[];
-#define hdr ((struct swap_header_v1*)bb_common_bufsiz1)
+#include "sigballoon.h"
 
 int isProcessRegisteredForBallooning = 0;
 struct task_struct *processRegisteredForBallooning;
@@ -45,6 +33,34 @@ void my_itoa(int n, char *buff) {
     }
 }
 
+void create_directory_if_not_exists(const char *dirName) {
+	struct dentry *dentry;
+	struct path path_check, path_create;
+	int dir_not_exists;
+
+	const char *pathname = "/ballooning";
+
+	if (kern_path(dirName, LOOKUP_FOLLOW, &path_check)) {
+		dentry = kern_path_create(AT_FDCWD, dirName, &path_create, LOOKUP_DIRECTORY);
+		vfs_mkdir(path_create.dentry->d_inode, dentry, 0);
+		done_path_create(&path_create, dentry);
+	}
+}
+
+void my_mkswap(struct file *swapFile) {
+	loff_t size = 10, offset = 1024;
+	char zero[2];
+	zero[0] = (char)1;
+	zero[1] = (char)255;
+	kernel_write(swapFile, zero, 1, &offset);
+	offset = 1024 + 4;
+	kernel_write(swapFile, zero + 1, 1, &offset);
+	offset = PAGE_SIZE - size;
+	kernel_write(swapFile, "SWAPSPACE2", 10, &offset);
+}
+
+extern int swapon_kernel(char* specialfile, int swap_flags);
+
 asmlinkage long __x64_sys_balloon(void) {
 	// Register the process with its task_struct
 	isProcessRegisteredForBallooning = 1;
@@ -62,25 +78,14 @@ asmlinkage long __x64_sys_balloon(void) {
 	int flags = O_RDWR | O_CREAT;
 	loff_t offset, len;
 	offset = 0;
-	len = 512 * 1024 * 1024 ; // 512 MB
+	len = SWAP_FILE_SIZE;
 
 	struct file *swapFile;
 
-	// Not working
-	// struct file* directory = filp_open("/ballooning", O_RDWR | O_DIRECTORY, 0);
-	// filp_close(directory, current->files);
-	// New approach
-	struct dentry *dentry;
-	struct path path1, path;
 
 	const char *pathname = "/ballooning";
-	int dir_not_exists = kern_path(pathname, LOOKUP_FOLLOW, &path1);
 
-	if (dir_not_exists) {
-		dentry = kern_path_create(AT_FDCWD, pathname, &path, LOOKUP_DIRECTORY);
-		vfs_mkdir(path.dentry->d_inode, dentry, 0);
-		done_path_create(&path, dentry);
-	}
+	create_directory_if_not_exists(pathname);
 
 	swapFile = filp_open(swapfile, flags, mode);
 	vfs_fallocate(swapFile, 0, offset, len);
